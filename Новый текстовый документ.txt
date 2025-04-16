@@ -1,0 +1,547 @@
+Задания выполняются на С++ в операционной системе Windows. Следует отметить,
+что число клиентов зависит от задания. Задания выполняются индивидуально. Нечетный вариант (1, 3, 5…) – реализация через
+именованные каналы, четный вариант (2, 4, 6…) – реализация через сокеты. 
+Требуется создать и запустить с сервера n процессов, открыть
+файл (имя файла вводится через консоль), и раздать все слова из открытого файла между всеми клиентами по следующему правилу: 1-й клиент должен получить 1-е слово, 2-й – второе и т.д.
+вплоть до n процесса, после чего процесс должен повторяться
+вплоть до конца считываемого файла. Не менее 3 клиентов.
+
+В данном разделе приведен пример реализации 0 варианта лабораторной работы №4. На листингах 14-15 показана реализация
+задания с помощью именованных каналов, на листингах 16-17
+аналог, но с помощью сокетов. Необходимые комментарии по коду добавлены в текст листингов.
+Листинг 14. Реализация 0 варианта лабораторной работы № 4 с помощью
+именованных каналов, серверная часть
+#include <windows.h>
+#include <iostream>
+#include <thread>
+#define CONNECTING_STATE 0
+#define READING_STATE 1
+#define WRITING_STATE 2
+#define INSTANCES 1
+#define PIPE_TIMEOUT 5000
+#define BUFSIZE 512
+using namespace std;
+typedef struct
+{
+ OVERLAPPED oOverlap; //Структура, позволяющая производить асинхронные операции
+ HANDLE hPipeInst; //Дескриптор канала
+ unsigned int cbRead; //Хранит кол-во прочитанных байт
+ unsigned int size;
+ unsigned int dwState; //Состояние работы канала: запись, чтение или подключение
+ bool fPendingIO; //Состояние, отображающее, подключен ли к каналу клиент
+} PIPEINST;
+76
+Продолжение лист. 14
+void DisconnectAndReconnect(unsigned int);
+bool ConnectToNewClient(HANDLE, LPOVERLAPPED);
+PIPEINST Pipe[INSTANCES];
+HANDLE hEvents[INSTANCES];
+void print_time(){
+ SYSTEMTIME lt;
+ GetLocalTime(&lt);
+ printf("%02d:%02d:%02d\t", lt.wHour, lt.wMinute, lt.wMilliseconds);
+}
+int main(void)
+{
+ unsigned int i, dwWait, cbRet, dwErr;
+ bool fSuccess;
+ bool pSuccess = true;
+ //Инициализация всех экземляров канала
+ for (i = 0; i < INSTANCES; i++) {
+ //Событие для экземпляра
+ hEvents[i] = CreateEvent(
+ NULL, //Атрибут защиты
+ true, //Ручное управление
+ true, //Начальное состояние - активно
+ NULL); //Имя
+ if (hEvents[i] == NULL) {
+ print_time();
+ cout << "[ERROR] CreateEvent failed with " << GetLastError() << '\n';
+ return 0;
+ }
+ //Присваиваем структуре OVERLAP событие
+ Pipe[i].oOverlap.hEvent = hEvents[i];
+ //Инициализируем сам канал
+ Pipe[i].hPipeInst = CreateNamedPipe(
+ "\\\\.\\pipe\\mynamedpipe", //Имя канала
+ PIPE_ACCESS_DUPLEX | //Чтение и запись в канал
+ FILE_FLAG_OVERLAPPED, //Включен перекрывающийся ввод/вывод
+ PIPE_TYPE_MESSAGE | // Канал передает сообщения, а не поток байт
+ PIPE_READMODE_MESSAGE | // Канал считывает сообщения
+ PIPE_WAIT, // Клиент будет ожидать, когда канал станет доступен
+77
+Продолжение лист. 14
+ INSTANCES, // Максимальное количество экземпляров канала
+ BUFSIZE*4, //Выходной размер буфера
+ BUFSIZE*4, //Входной размер буфера
+ PIPE_TIMEOUT, // Время ожидания клиента
+ NULL); //Атрибут защиты
+ print_time();
+ cout << "[MESSAGE] Initializing Pipe[" << i << "]\n";
+ if (Pipe[i].hPipeInst == INVALID_HANDLE_VALUE) {
+ print_time();
+ cout << "[ERROR] CreateNamedPipe failed with " << GetLastError() << '\n';
+ return 0;
+ }
+ //Подключаем канал к клиенту
+ Pipe[i].fPendingIO=ConnectToNewClient(Pipe[i].hPipeInst, &Pipe[i].oOverlap);
+ //Смотрим, произошло ли подключение к клиенту
+ Pipe[i].dwState = Pipe[i].fPendingIO ?
+ CONNECTING_STATE : // Нет
+ READING_STATE; //Да
+ }
+ while (1) {
+ int j = 1;
+ //Ждем, пока один из каналов закончит одну из операций
+ dwWait = WaitForMultipleObjects(
+ INSTANCES, // Количество событий
+ hEvents, // События
+ false, // Не ждать всех
+ INFINITE); // Ждать бесконечно
+ //dwWait указывает, какой канал завершил операцию. WAIT_OBJECT_0 -
+первый элемент массива каналов
+ i = dwWait - WAIT_OBJECT_0; //Указывает какой канал в массиве завершил
+операцию
+ if (i < 0 || i > (INSTANCES - 1)) {
+ print_time();
+ cout << "[ERROR] Index out of range.\n";
+ return 0;
+ }
+ if (Pipe[i].fPendingIO) {
+78
+Продолжение лист. 14
+ fSuccess = GetOverlappedResult(
+ Pipe[i].hPipeInst, //Экземпляр канала
+ &Pipe[i].oOverlap, //Структура OVERLAPPED соответствующего канала
+ &cbRet, //Количество переданных байтов
+ false); //Не ждать
+ switch (Pipe[i].dwState) {
+ //Ждет начала операции чтения
+ case CONNECTING_STATE:
+ print_time();
+ cout << "[MESSAGE] Connected\n";
+ if (! fSuccess) {
+ print_time();
+ cout << "[ERROR] Error code" << GetLastError() << '\n';
+ return 0;
+ }
+ Pipe[i].dwState = READING_STATE;
+ break;
+ //Ждет начала операции записи
+ case READING_STATE:
+ if (! fSuccess || cbRet == 0) {
+ DisconnectAndReconnect(i);
+ continue;
+ }
+ Pipe[i].cbRead = cbRet;
+ Pipe[i].dwState = WRITING_STATE;
+ break;
+ //Ждет начала операции чтения
+ case WRITING_STATE:
+ if (!fSuccess || cbRet != 4) {
+ DisconnectAndReconnect(i);
+ continue;
+ }
+ Pipe[i].dwState = READING_STATE;
+ break;
+ default: {
+ print_time();
+ cout << "[ERROR] Invalid pipe state.\n";
+79
+Продолжение лист. 14
+ return 0;
+ }
+ }
+ }
+ //Выполняем текущее действие
+ switch (Pipe[i].dwState) {
+ //Читаем данные из канала
+ case READING_STATE:
+ print_time();
+ cout << "[MESSAGE] [" << i << "]:Read\n";
+ fSuccess = ReadFile(
+ Pipe[i].hPipeInst,
+ &Pipe[i].size,
+ 4,
+ &Pipe[i].cbRead,
+ &Pipe[i].oOverlap);
+ //При успешном завершении чтения
+ if (fSuccess && Pipe[i].cbRead != 0) {
+ Pipe[i].fPendingIO = false;
+ Pipe[i].dwState = WRITING_STATE;
+ continue;
+ }
+ //Если операция чтения еще не закончилась, то пропускаем
+ dwErr = GetLastError();
+ if (! fSuccess && (dwErr == ERROR_IO_PENDING)) {
+ Pipe[i].fPendingIO = true;
+ continue;
+ }
+ //Иначе если произошла ошибка, отключаемся от клиента
+ DisconnectAndReconnect(i);
+ break;
+ //Запись данных в канал
+ case WRITING_STATE: {
+ if(Pipe[i].size > BUFSIZE) {
+ print_time();
+ cout << "[ERROR] The numbers size exceeds the size of the buffer\n";
+80
+Продолжение лист. 14
+ dwErr = -1;
+ fSuccess = WriteFile(Pipe[i].hPipeInst, &dwErr, 4, &cbRet,
+&Pipe[i].oOverlap);
+ break;
+ }
+ print_time();
+ cout << "[MESSAGE] [" << i << "]:Write\n";
+ for(; j <= Pipe[i].size; j++) {
+ Sleep(500);
+ fSuccess = WriteFile(Pipe[i].hPipeInst, &j, 4, &cbRet, &Pipe[i].oOverlap);
+ if(!fSuccess && pSuccess) {
+ DisconnectAndReconnect(i);
+ pSuccess = fSuccess;
+ }
+ }
+ int b = -1;
+ fSuccess = WriteFile(Pipe[i].hPipeInst, &b, 4, &cbRet, &Pipe[i].oOverlap);
+ //При успешном завершении записи
+ if (fSuccess && cbRet == 4) {
+ Pipe[i].fPendingIO = false;
+ Pipe[i].dwState = READING_STATE;
+ pSuccess = true;
+ j = 1;
+ continue;
+ }
+ //Если запись еще не завершилась, то пропускаем
+ dwErr = GetLastError();
+ if (! fSuccess && (dwErr == ERROR_IO_PENDING)) {
+ Pipe[i].fPendingIO = true;
+ continue;
+ }
+ //Иначе если произошла ошибка, отключаемся от клиента
+ DisconnectAndReconnect(i);
+ break;
+ }
+ default: {
+ print_time();
+81
+Продолжение лист. 14
+ cout << "[ERROR] Invalid pipe state.\n";
+ return 0;
+ }
+ }
+ }
+ return 0;
+}
+//Отключаемся от текущего клиента и ждем нового
+void DisconnectAndReconnect(unsigned int i)
+{
+ //Отключаемся от текущего
+ //print_time();
+ //cout << "[MESSAGE] [" << i << "]:Disconnecting\n";
+ if (! DisconnectNamedPipe(Pipe[i].hPipeInst) ) {
+ print_time();
+ cout << "[ERROR] DisconnectNamedPipe failed with " << GetLastError() << '\n';
+ }
+ //Подключаемся к новому клиенту
+ Pipe[i].fPendingIO = ConnectToNewClient(Pipe[i].hPipeInst, &Pipe[i].oOverlap);
+ //Проверяем состояние
+ Pipe[i].dwState = Pipe[i].fPendingIO ?
+ CONNECTING_STATE : //Ждем подключения
+ READING_STATE; //Подключен
+}
+//Если клиент подключился, то fPendingIO = false
+bool ConnectToNewClient(HANDLE hPipe, LPOVERLAPPED lpo)
+{
+ BOOL fConnected, fPendingIO = false;
+ //Пытаемся подключиться к каналу
+ fConnected = ConnectNamedPipe(hPipe, lpo);
+ if (fConnected) {
+ print_time();
+ cout << "[ERROR] ConnectNamedPipe failed with " << GetLastError() << '\n';
+ return 0;
+ }
+ switch (GetLastError())
+ {
+82
+Окончание лист. 14
+ //Подключение в процессе. Функцию выполнили, и если подключения не произошло, выбрасывается данная ошибка
+ case ERROR_IO_PENDING:
+ //print_time();
+ //cout << "[MESSAGE] Waiting\n";
+ fPendingIO = true;
+ break;
+ //Если клиент уже ожидал подключения. Просто обновляем событие у канала
+ case ERROR_PIPE_CONNECTED:
+ print_time();
+ cout << "[MESSAGE] Connected\n";
+ if (SetEvent(lpo->hEvent))
+ break;
+ //Ошибка
+ default: {
+ print_time();
+ cout << "[ERROR] ConnectNamedPipe failed with " << GetLastError() << '\n';
+ return 0;
+ }
+ }
+ return fPendingIO;
+}
+Листинг 15. Реализация 0 варианта лабораторной работы № 4 с помощью
+именованных каналов, клиентская часть
+#include <windows.h>
+#include <iostream>
+#define BUFSIZE 512
+using namespace std;
+void print_time(){
+ SYSTEMTIME lt;
+ GetLocalTime(&lt);
+ printf("%02d:%02d:%02d\t", lt.wHour, lt.wMinute, lt.wMilliseconds);
+}
+int main(int argc, char *argv[])
+{
+ HANDLE hPipe; // Канал
+ bool fSuccess = false; // Переменная для проверки корректности операций
+83
+Продолжение лист. 15
+ unsigned int cbIO; //Количество считанных/записанных байт
+ int number_count; //Количество чисел, которые надо передать
+ //Пытаемся открыть канал и ждем его, если недоступен
+ while (1)
+ {
+ hPipe = CreateFile( "\\\\.\\pipe\\mynamedpipe", //Имя канала
+ GENERIC_READ | //Чтение и запись из канала
+ GENERIC_WRITE,
+ 0, //Уровень общего доступа
+ NULL, //Атрибуты безопасности
+ OPEN_EXISTING, //Открыть существующий
+ 0, //Атрибуты файла
+ NULL); //Файл шаблона
+ if (hPipe != INVALID_HANDLE_VALUE)
+ break;
+ //Если не удалось открыть канал
+ if (GetLastError() != ERROR_PIPE_BUSY) {
+ print_time();
+ cout << "[ERROR] Could not open pipe. GLE=" << GetLastError() << '\n';
+ return -1;
+ }
+ //Если все экземпляры канала заняты, ждем 20 секунд
+ if (!WaitNamedPipe("\\\\.\\pipe\\mynamedpipe", 20000)) {
+ print_time();
+ cout << "[ERROR] Could not open pipe: 20 second wait timed out.";
+ return -1;
+ }
+ }
+ number_count = 20;
+ //Отправляем серверу, какое кол-во значений надо получить клиенту
+ //print_time();
+ //cout << "[MESSAGE] Write\n";
+ fSuccess = WriteFile(
+ hPipe, //Канал
+ &number_count, //Данные для передачи
+ 4, //Количество переданных байт
+ &cbIO, //Сколько байт передалось на самом деле
+84
+Окончание лист. 15
+ NULL); //Не асинхронный вывод
+ if (!fSuccess) {
+ print_time();
+ cout << "[ERROR] WriteFile to pipe failed. GLE=" << GetLastError() << '\n';
+ return -1;
+ }
+ print_time();
+ cout << "[MESSAGE] Message sent to server, receiving reply as follows:\n";
+ //Читаем из канала необходимые значения
+ print_time();
+ cout << "[MESSAGE] Read\n";
+ int* x = new int[number_count];
+ do {
+ for(int i = 0; i < number_count; i++){
+ fSuccess = ReadFile(
+ hPipe, // Канал
+ &(*(x+i)), //Куда записываем данные
+ 4, //Какое кол-во байт записываем
+ &cbIO, //Сколько записали байт
+ NULL); //Не асинхронное чтение
+ if((*(x + i) == 1 && i != 0) || *(x + i) == -1) break;
+ cout << x[i] << '\n';
+ }
+ if (!fSuccess && GetLastError() != ERROR_MORE_DATA)
+ break;
+ } while (!fSuccess);
+ if (!fSuccess) {
+ print_time();
+ cout << "[ERROR] ReadFile from pipe failed. GLE=" << GetLastError() << '\n';
+ return -1;
+ }
+ print_time();
+ cout << "[MESSAGE] Closing pipe and exit\n";
+ CloseHandle(hPipe);
+ return 0;
+}
+85
+Листинг 16. Реализация 0 варианта лабораторной работы № 4 с помощью
+сокетов, серверная часть
+#pragma comment(lib, "ws2_32.lib")
+#include <iostream>
+#include<winsock2.h>
+#pragma warning(disable: 4996)//для inet_addr
+using namespace std;
+//проверка на то, отправилось и считалось ли число
+bool printCausedBy(int Result, const char* nameOfOper) {
+ if (!Result) {
+ cerr << "Connection closed.\n";
+ return false;
+ }
+ else if (Result < 0) {
+ cout << nameOfOper;
+ cerr << " failed: ", WSAGetLastError();
+ return false;
+ }
+ return true;
+}
+int main() {
+ //Загрузка библиотеки
+ WSAData wsaData; //создаем структуру для загрузки
+ WORD DLLVersion = MAKEWORD(2, 1); // Версия библиотеки winsock
+ if (WSAStartup(DLLVersion, &wsaData) != 0) { // проверка подключения
+ cerr << "Error: failed to link library.\n";
+ return 1;
+ }
+ //Заполняем информацию об адресе сокета
+ SOCKADDR_IN addr;
+ int sizeOfAddr = sizeof(addr);
+ addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+ addr.sin_port = htons(1111);
+ addr.sin_family = AF_INET;
+ SOCKET sListen = socket(AF_INET, SOCK_STREAM, NULL); //сокет для
+прослушивания порта
+ if (bind(sListen, (SOCKADDR*)&addr, sizeOfAddr) == SOCKET_ERROR) {
+//привязка адреса сокету
+86
+Продолжение лист. 16
+ printf("Error bind %d\n", WSAGetLastError());
+ closesocket(sListen);
+ WSACleanup();
+ return 1;
+ } //подключение прослушивания с максимальной очередью
+ if (listen(sListen, SOMAXCONN) == SOCKET_ERROR) {
+ cout << "Listen failed;\n";
+ closesocket(sListen);
+ WSACleanup();
+ return 1;
+ }
+ int max = 0, current = 1; //переменные для максимального числа и текущего
+ char buffer[256] = "1";
+ while (true) {
+ SOCKET newConnection = accept(sListen, (SOCKADDR*)&addr,
+&sizeOfAddr); //сокет для соединения с клиентом
+ if (!newConnection) { //проверяем, произошло ли соединение с клиентом
+ cout << "Error in connect!\n";
+ if (closesocket(sListen) == SOCKET_ERROR)
+ cerr << "Failed to terminate connection.\n Error code: " << WSAGetLastError();
+ WSACleanup();
+ return 1;
+ }
+ else {
+ cout << "New client connected\n";
+ if (!max) {
+ cout << "Input max number: ";
+ cin >> max;
+ while (cin.fail() || max <= 0 || cin.peek() != '\n') {
+ cin.clear();
+ cin.ignore(32768, '\n');
+ cout << "I don't understand you, sorry. Please, try again.\n";
+ cout << "Input max number >> ";
+ cin >> max;
+ }
+ while (printCausedBy(send(newConnection, buffer, 256, NULL), "Send")
+87
+Окончание лист. 16
+&& current < max) {
+ itoa(++current, buffer, 10);
+ Sleep(1000);
+ }
+ cout << ("Client disconnect or current number greater than max number\n\n");
+ if (closesocket(newConnection) == SOCKET_ERROR)
+ cerr << "Failed to terminate connection.\n Error code: " << WSAGetLastError();
+ }
+ else {
+ if (current > max) {
+ if (closesocket(newConnection) == SOCKET_ERROR)
+ cerr << "Failed to terminate connection.\n Error code: " << WSAGetLastError();
+ break;
+ }
+ while (printCausedBy(send(newConnection, buffer, 256, NULL), "Send")
+&& current < max) {
+ itoa(++current, buffer, 10);
+ Sleep(1000);
+ }
+ cout << ("Client disconnect or current number greater than max number\n\n");
+ if (closesocket(newConnection) == SOCKET_ERROR)
+ cerr << "Failed to terminate connection.\n Error code: " << WSAGetLastError();
+ }
+ }
+ }
+if (closesocket(sListen) == SOCKET_ERROR)
+ cerr << "Failed to terminate connection.\n Error code: " << WSAGetLastError();
+ WSACleanup();
+ return 0;
+}
+88
+Листинг 17. Реализация 0 варианта лабораторной работы № 4 с помощью
+сокетов, клиентская часть
+#pragma comment(lib, "ws2_32.lib")
+#include <iostream>
+#include<winsock2.h>
+#pragma warning(disable: 4996)//для inet_addr
+using namespace std;
+//проверка на то, отправилось и считалось ли число
+bool printCausedBy(int Result, const char* nameOfOper) {
+ if (!Result) {
+ cout << "Connection closed.\n";
+ return false;
+ }
+ else if (Result < 0) {
+ cout << nameOfOper;
+ cerr << " failed:\n", WSAGetLastError();
+ return false;
+ }
+ return true;
+}
+int main() {
+ //Загрузка библиотеки
+ WSAData wsaData; //создаем структуру для загрузки
+ WORD DLLVersion = MAKEWORD(2, 1); //запрашиваемая версия библиотеки winsock
+ if (WSAStartup(DLLVersion, &wsaData) != 0) { //проверка подключения библиотеки
+ cerr << "Error: failed to link library.\n";
+ return 1;
+ }
+ //Заполняем информацию об адресе сокета
+ SOCKADDR_IN addr;
+ addr.sin_addr.s_addr = inet_addr("127.0.0.1"); //адрес
+ addr.sin_port = htons(1111); //порт
+ addr.sin_family = AF_INET; //семейство протоколов
+ //сокет для прослушивания порта
+ SOCKET Connection = socket(AF_INET, SOCK_STREAM, NULL);
+ //проверка на подключение к серверу
+89
+Окончание лист. 17
+ if (connect(Connection, (SOCKADDR*)&addr, sizeof(addr))) {
+ cerr << "Error: failed connect to the server.\n";
+ return 1;
+ }
+ cout << "Server connection established.\n";
+ char buffer[256];
+ buffer[0] = 'g';
+ //считываем из буфера с сервера текущее число и выводим
+ while (printCausedBy(recv(Connection, buffer, 256, NULL), "Recv")) {
+ cout << buffer << ' ';
+ Sleep(1000);
+ }
+ cout << "Server has been stopped\n";
+ if (closesocket(Connection) == SOCKET_ERROR)
+ cerr << "Failed to terminate connection.\n Error code: " << WSAGetLastError();
+ WSACleanup();
+ cout << "Correct exit done\n";
+ return 0;
+}
