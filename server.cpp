@@ -143,5 +143,4 @@ int main(int argc, char* argv[]) {
     }
 
     cout << "Word distribution completed successfully." << endl;
-    return 0;
 }

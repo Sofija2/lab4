@@ -10,13 +10,13 @@ int main(int argc, char* argv[]) {
 
     if (argc != 2) {
         cerr << "Usage: " << argv[0] << " <client number>" << endl;
-        return -1;
+        return 1;
     }
 
     int clientNum = atoi(argv[1]);
     if (clientNum < 0) {
         cerr << "Client number must be non-negative" << endl;
-        return -1;
+        return 1;
     }
 
     HANDLE hPipe;
@@ -45,13 +45,13 @@ int main(int argc, char* argv[]) {
         // обработка ошибок подключения
         if (GetLastError() != ERROR_PIPE_BUSY) {
             cerr << "Failed to connect to pipe. GLE=" << GetLastError() << endl;
-            return -1;
+            return 1;
         }
 
         // освобождение
         if (!WaitNamedPipeA(pipeName.c_str(), 20000)) {
             cerr << "Could not open pipe: 20 second wait timed out" << endl;
-            return -1;
+            return 1;
         }
     }
 
