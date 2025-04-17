@@ -7,9 +7,7 @@
 using namespace std;
 
 int main(int argc, char* argv[]) {
-    setlocale(LC_ALL, "Russian");
 
-    // Проверка аргументов командной строки
     if (argc != 2) {
         cerr << "Usage: " << argv[0] << " <client number>" << endl;
         return -1;
@@ -44,13 +42,13 @@ int main(int argc, char* argv[]) {
             break;
         }
 
-        // Обработка ошибок подключения
+        // обработка ошибок подключения
         if (GetLastError() != ERROR_PIPE_BUSY) {
             cerr << "Failed to connect to pipe. GLE=" << GetLastError() << endl;
             return -1;
         }
 
-        // Ожидание освобождения канала
+        // освобождение
         if (!WaitNamedPipeA(pipeName.c_str(), 20000)) {
             cerr << "Could not open pipe: 20 second wait timed out" << endl;
             return -1;
@@ -59,9 +57,9 @@ int main(int argc, char* argv[]) {
 
     cout << ">>> Client " << clientNum << " connected to server <<<" << endl;
 
-    // Основной цикл работы клиента
+    // 
     while (true) {
-        // Чтение данных от сервера
+        // чтение данных от сервера
         fSuccess = ReadFile(
             hPipe,
             buffer,
@@ -69,7 +67,7 @@ int main(int argc, char* argv[]) {
             &dwRead,
             NULL);
 
-        // Обработка ошибок чтения
+        // обработка ошибок чтения
         if (!fSuccess || dwRead == 0) {
             if (GetLastError() == ERROR_BROKEN_PIPE) {
                 cout << "Server disconnected." << endl;
@@ -83,7 +81,7 @@ int main(int argc, char* argv[]) {
         buffer[dwRead] = '\0';
         string word(buffer);
 
-        // Проверка команды завершения работы
+        // проверка команды завершения работы
         if (word == "END") {
             cout << "Received termination command." << endl;
             break;
@@ -91,7 +89,7 @@ int main(int argc, char* argv[]) {
 
         cout << "Received word: " << word << endl;
 
-        // Отправка подтверждения серверу
+        // отправка подтверждения серверу
         string ack = "ACK_" + to_string(clientNum);
         fSuccess = WriteFile(
             hPipe,
@@ -106,7 +104,6 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Закрытие дескриптора канала
     CloseHandle(hPipe);
     cout << "Client " << clientNum << " shutting down." << endl;
     return 0;

@@ -11,7 +11,7 @@
 using namespace std;
 
 // Функция для чтения слов из файла
-vector<string> readWordsFromFile(const string& filename) {
+vector<string> readF(const string& filename) {
     vector<string> words;
     ifstream file(filename);
     if (!file.is_open()) {
@@ -28,18 +28,17 @@ vector<string> readWordsFromFile(const string& filename) {
 }
 
 int main(int argc, char* argv[]) {
-    setlocale(LC_ALL, "Russian");
 
     // Проверка аргументов командной строки
     if (argc != 2) {
         cerr << "Usage: " << argv[0] << " <number of clients>" << endl;
-        return -1;
+        return 1;
     }
 
     int numClients = atoi(argv[1]);
     if (numClients < 3) {
         cerr << "Number of clients must be at least 3" << endl;
-        return -1;
+        return 1;
     }
 
     // Запрос имени файла у пользователя
@@ -48,10 +47,10 @@ int main(int argc, char* argv[]) {
     getline(cin, filename);
 
     // Чтение слов из файла
-    vector<string> words = readWordsFromFile(filename);
+    vector<string> words = readF(filename);
     if (words.empty()) {
         cout << "File is empty or cannot be read." << endl;
-        return -1;
+        return 1;
     }
 
     cout << "Found " << words.size() << " words in the file." << endl;
@@ -93,7 +92,7 @@ int main(int argc, char* argv[]) {
         cout << "Client " << i << " connected successfully" << endl;
     }
 
-    // Распределение слов между клиентами по круговому алгоритму
+    // Распределение слов между клиентами 
     int currentClient = 0;
     for (size_t i = 0; i < words.size(); i++) {
         DWORD dwWritten;
